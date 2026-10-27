@@ -1,66 +1,72 @@
-# --- SORT BY EXTENSION (jpg folder, pdf folder, etc.) ---
+@echo off
+cd /d "%~dp0"
+set "SELF_PATH=%~f0"
+set "SELF_NAME=%~nx0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s = (Get-Content -LiteralPath $env:SELF_PATH | Select-Object -Skip 6) -join [Environment]::NewLine; Invoke-Expression $s"
+goto :eof
 
-# Get the current directory (The folder you right-clicked in)
-$currentDir = Get-Location
+# --- POWERSHELL CODE STARTS HERE ---
+$currentDir = (Get-Location).Path
 Write-Host "Sorting by extension in: $currentDir" -ForegroundColor Cyan
 
-# Files to ALWAYS ignore
-$ignoredFiles = @('sort_files.ps1', 'Run_Sorter.bat')
+# Files and extensions to ALWAYS ignore ($env:SELF_NAME automatically ignores this .bat file)
+$ignoredFiles = @('sort_files.ps1', 'Run_Sorter.bat', 'desktop.ini', $env:SELF_NAME)
+$ignoredExtensions = @('.lnk', '.url', '.tmp', '.crdownload', '.part', '.opdownload')
 
-# Get all files in the CURRENT directory
-$files = Get-ChildItem -LiteralPath $currentDir -File | Where-Object { $_.Extension -ne '.lnk' -and $_.Name -notin $ignoredFiles }
+$files = @(Get-ChildItem -LiteralPath $currentDir -File | Where-Object {
+    $_.Extension.ToLower() -notin $ignoredExtensions -and $_.Name -notin $ignoredFiles
+})
 
 if ($files.Count -eq 0) {
-    Write-Host "No files found to sort." -ForegroundColor Yellow
-    Write-Host "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     Exit
 }
 
 $counter = 0
+
 foreach ($file in $files) {
     $counter++
     $percent = [math]::Round(($counter / $files.Count) * 100)
     Write-Progress -Activity "Sorting Files..." -Status "Moving $($file.Name)" -PercentComplete $percent
 
-    # Get extension (e.g., ".jpg") and remove the dot (e.g., "jpg")
+    # 1. Determine folder name
     $extension = $file.Extension.TrimStart('.').ToLower()
     
-    # Handle files with no extension
     if ([string]::IsNullOrWhiteSpace($extension)) {
-        $folderName = "No_Extension"
-    } else {
-        $folderName = $extension
+        $extension = "_No_Extension"
+    } elseif ([string]::IsNullOrWhiteSpace($file.BaseName)) {
+        $extension = "_Dotfiles"
     }
 
-    $destFolder = Join-Path $currentDir $folderName
+    # 2. Create the target folder if it doesn't exist
+    $targetFolder = Join-Path -Path $currentDir -ChildPath $extension
+    if (-not (Test-Path -LiteralPath $targetFolder -PathType Container)) {
+        try {
+            $null = New-Item -Path $targetFolder -ItemType Directory -Force -ErrorAction Stop
+        } catch {
+            continue
+        }
+    }
+
+    # 3. Resolve duplicate filenames safely (e.g., "photo (1).jpg")
+    $destinationPath = Join-Path -Path $targetFolder -ChildPath $file.Name
+    $duplicateCounter = 1
     
-    # Create folder if it doesn't exist (e.g., "C:\Users\...\Documents\jpg")
-    if (-not (Test-Path $destFolder)) {
-        New-Item -ItemType Directory -Path $destFolder | Out-Null
+    while (Test-Path -LiteralPath $destinationPath) {
+        if ([string]::IsNullOrWhiteSpace($file.BaseName)) {
+            $newFileName = "{0} ({1})" -f $file.Name, $duplicateCounter
+        } else {
+            $newFileName = "{0} ({1}){2}" -f $file.BaseName, $duplicateCounter, $file.Extension
+        }
+        $destinationPath = Join-Path -Path $targetFolder -ChildPath $newFileName
+        $duplicateCounter++
     }
 
-    $destPath = Join-Path $destFolder $file.Name
-
-    # HANDLE DUPLICATES (If file already exists, rename it)
-    if (Test-Path $destPath) {
-        $i = 1
-        $baseName = $file.BaseName
-        do {
-            $newName = "$baseName ($i).$extension"
-            $destPath = Join-Path $destFolder $newName
-            $i++
-        } while (Test-Path $destPath)
-    }
-
+    # 4. Move the file
     try {
-        Move-Item $file.FullName -Destination $destPath -ErrorAction Stop
-    }
-    catch {
-        Write-Host "Error moving $($file.Name): $($_.Exception.Message)" -ForegroundColor Red
+        Move-Item -LiteralPath $file.FullName -Destination $destinationPath -ErrorAction Stop
+    } catch {
+        continue
     }
 }
 
 Write-Progress -Activity "Sorting Files..." -Completed
-Write-Host "Done! Sorted $($files.Count) files into extension folders." -ForegroundColor Green
-Start-Sleep -Seconds 2
